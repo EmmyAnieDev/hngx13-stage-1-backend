@@ -67,57 +67,71 @@ class StringAnalyzer {
 
     public function deleteByValue(string $value): bool {
         $row = $this->db->getByValue($value);
-        if (!$row) return false; // string does not exist
+        if (!$row) return false;
 
-        $this->db->deleteByValue($value); // actually delete from DB
+        $this->db->deleteByValue($value);
         return true;
     }
 
     public function getAll(array $query): array {
         $filters = [];
+        $appliedFilters = [];
 
         if (isset($query['is_palindrome'])) {
-            $filters['is_palindrome'] = filter_var(
+            $val = filter_var(
                 $query['is_palindrome'],
                 FILTER_VALIDATE_BOOLEAN,
                 FILTER_NULL_ON_FAILURE
             );
-            if ($filters['is_palindrome'] === null) {
+            if ($val === null) {
                 throw new InvalidArgumentException('Invalid is_palindrome value');
             }
+            $filters['is_palindrome'] = $val;
+            $appliedFilters['is_palindrome'] = $val;
         }
 
         if (isset($query['min_length'])) {
             if (!is_numeric($query['min_length'])) throw new InvalidArgumentException('Invalid min_length');
             $filters['min_length'] = (int)$query['min_length'];
+            $appliedFilters['min_length'] = (int)$query['min_length'];
         }
 
         if (isset($query['max_length'])) {
             if (!is_numeric($query['max_length'])) throw new InvalidArgumentException('Invalid max_length');
             $filters['max_length'] = (int)$query['max_length'];
+            $appliedFilters['max_length'] = (int)$query['max_length'];
         }
 
         if (isset($query['word_count'])) {
             if (!is_numeric($query['word_count'])) throw new InvalidArgumentException('Invalid word_count');
             $filters['word_count'] = (int)$query['word_count'];
+            $appliedFilters['word_count'] = (int)$query['word_count'];
         }
 
         if (isset($query['contains_character'])) {
             $char = $query['contains_character'];
-            if (strlen($char) !== 1) throw new InvalidArgumentException('contains_character must be a single character');
+            if (mb_strlen($char, 'UTF-8') !== 1) {
+                throw new InvalidArgumentException('contains_character must be a single character');
+            }
             $filters['contains_character'] = $char;
+            $appliedFilters['contains_character'] = $char;
         }
 
         $rows = $this->db->getAll($filters);
 
-        // decode properties for each row
+        // Decode properties for each row
         foreach ($rows as &$row) {
             if (isset($row['properties']) && is_string($row['properties'])) {
                 $row['properties'] = json_decode($row['properties'], true);
             }
         }
 
-        return $rows;
+        // Return in the required format
+        return [
+            'data' => $rows,
+            'count' => count($rows),
+            'filters_applied' => $appliedFilters
+        ];
     }
 
     public function filterByNaturalLanguage(string $query): array {
@@ -127,18 +141,12 @@ class StringAnalyzer {
             throw new InvalidArgumentException('Unable to parse natural language query');
         }
 
-        $rows = $this->getAll($filters);
-
-        // decode properties
-        foreach ($rows as &$row) {
-            if (isset($row['properties']) && is_string($row['properties'])) {
-                $row['properties'] = json_decode($row['properties'], true);
-            }
-        }
+        // Get filtered results
+        $result = $this->getAll($filters);
 
         return [
-            'data' => $rows,
-            'count' => count($rows),
+            'data' => $result['data'],
+            'count' => $result['count'],
             'interpreted_query' => [
                 'original' => $query,
                 'parsed_filters' => $filters
@@ -148,12 +156,42 @@ class StringAnalyzer {
 
     public function parseNaturalLanguageQuery(string $query): array {
         $filters = [];
+        $query = strtolower($query);
 
-        if (preg_match('/single word/i', $query)) $filters['word_count'] = 1;
-        if (preg_match('/palindromic/i', $query)) $filters['is_palindrome'] = true;
-        if (preg_match('/longer than (\d+)/i', $query, $m)) $filters['min_length'] = (int)$m[1] + 1;
-        if (preg_match('/shorter than (\d+)/i', $query, $m)) $filters['max_length'] = (int)$m[1] - 1;
-        if (preg_match('/containing the letter (\w)/i', $query, $m)) $filters['contains_character'] = $m[1];
+        // Word count patterns
+        if (preg_match('/single\s+word/i', $query)) {
+            $filters['word_count'] = 1;
+        } elseif (preg_match('/(\d+)\s+words?/i', $query, $m)) {
+            $filters['word_count'] = (int)$m[1];
+        }
+
+        // Palindrome patterns
+        if (preg_match('/palindrom(e|ic)/i', $query)) {
+            $filters['is_palindrome'] = true;
+        }
+
+        // Length patterns
+        if (preg_match('/longer\s+than\s+(\d+)/i', $query, $m)) {
+            $filters['min_length'] = (int)$m[1] + 1;
+        }
+        if (preg_match('/shorter\s+than\s+(\d+)/i', $query, $m)) {
+            $filters['max_length'] = (int)$m[1] - 1;
+        }
+        if (preg_match('/at\s+least\s+(\d+)\s+characters?/i', $query, $m)) {
+            $filters['min_length'] = (int)$m[1];
+        }
+        if (preg_match('/more\s+than\s+(\d+)\s+characters?/i', $query, $m)) {
+            $filters['min_length'] = (int)$m[1] + 1;
+        }
+
+        // Character contains patterns
+        if (preg_match('/contain(?:ing)?\s+(?:the\s+)?(?:letter|character)\s+([a-z])/i', $query, $m)) {
+            $filters['contains_character'] = strtolower($m[1]);
+        } elseif (preg_match('/with\s+(?:the\s+)?(?:letter|character)\s+([a-z])/i', $query, $m)) {
+            $filters['contains_character'] = strtolower($m[1]);
+        } elseif (preg_match('/first\s+vowel/i', $query)) {
+            $filters['contains_character'] = 'a';
+        }
 
         return $filters;
     }

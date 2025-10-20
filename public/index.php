@@ -20,19 +20,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// Better path extraction
+$requestUri = $_SERVER['REQUEST_URI'];
+$scriptName = $_SERVER['SCRIPT_NAME'];
+$basePath = rtrim(dirname($scriptName), '/');
 
-$basePath = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
-$path = (string) substr($_SERVER['REQUEST_URI'], strlen($basePath));
-$path = strtok($path, '?'); // remove query string
+// Remove base path and query string
+$path = '/' . trim(substr($requestUri, strlen($basePath)), '/');
+$path = strtok($path, '?');
+$path = rtrim($path, '/'); // Remove trailing slash for consistency
+
 $method = $_SERVER['REQUEST_METHOD'];
 
-
 $config = include __DIR__ . '/../config.php';
-$db = new DB($config['db']);
-
+$db = new DB();
 $db->init();
 $analyzer = new StringAnalyzer($db);
-
 
 function jsonResponse($data, $status=200) {
     header('Content-Type: application/json');
@@ -42,17 +45,15 @@ function jsonResponse($data, $status=200) {
     exit;
 }
 
-
 // Routing
 
 // Health check
-if ($method === 'GET' && $path === '/' || $path === '') {
-    jsonResponse(['success' => 'true', 'message' => 'Api is running...'], 200);
+if ($method === 'GET' && ($path === '/' || $path === '')) {
+    jsonResponse(['success' => true, 'message' => 'Api is running...'], 200);
 }
 
-
 // POST /strings
-if ($method === 'POST' && preg_match('#^/strings/?$#', $path)) {
+if ($method === 'POST' && $path === '/strings') {
     $body = json_decode(file_get_contents('php://input'), true);
 
     if (!is_array($body) || !isset($body['value'])) {
@@ -78,32 +79,10 @@ if ($method === 'POST' && preg_match('#^/strings/?$#', $path)) {
         error_log("Exception in create(): " . $e->getMessage());
         jsonResponse(['error' => 'Internal error'], 500);
     }
-
 }
 
-
-// GET /strings with filters
-if ($method === 'GET' && preg_match('#^/strings/?$#', $path)) {
-    $query = $_GET;
-    
-    try {
-        $result = $analyzer->getAll($query);
-        jsonResponse($result, 200);
-    } catch (InvalidArgumentException $e) {
-        error_log("Error in GET /strings: " . $e->getMessage());
-        
-        jsonResponse([
-            'error' => 'Invalid query parameter values or types'
-        ], 400);
-    } catch (Exception $e) {
-        error_log("Unexpected error in GET /strings: " . $e->getMessage());
-        jsonResponse(['error' => 'Internal error'], 500);
-    }
-}
-
-
-// GET /strings/filter-by-natural-language
-if ($method === 'GET' && preg_match('#^/strings/filter-by-natural-language/?$#', $path)) {
+// GET /strings/filter-by-natural-language (MUST come before GET /strings/{string_value})
+if ($method === 'GET' && $path === '/strings/filter-by-natural-language') {
     $q = isset($_GET['query']) ? $_GET['query'] : '';
     
     if ($q === '') {
@@ -119,14 +98,34 @@ if ($method === 'GET' && preg_match('#^/strings/filter-by-natural-language/?$#',
         jsonResponse([
             'error' => 'Unable to parse natural language query'
         ], 400);
-    } catch (ConflictingFiltersException $e) {
-        error_log("Conflicting filters: " . $e->getMessage());
-        
-        jsonResponse([
-            'error' => 'Query parsed but resulted in conflicting filters'
-        ], 422);
     } catch (Exception $e) {
         error_log("Unexpected error in /strings/filter-by-natural-language: " . $e->getMessage());
+        jsonResponse(['error' => 'Internal error'], 500);
+    }
+}
+
+// GET /strings with filters
+if ($method === 'GET' && $path === '/strings') {
+    $query = $_GET;
+
+    try {
+        $result = $analyzer->getAll($query);
+
+        // Force proper response structure
+        if (!isset($result['data'])) {
+            $result = [
+                'data' => $result,
+                'count' => is_array($result) ? count($result) : 0,
+                'filters_applied' => $query
+            ];
+        }
+
+        jsonResponse($result, 200);
+    } catch (InvalidArgumentException $e) {
+        error_log("Error in GET /strings: " . $e->getMessage());
+        jsonResponse(['error' => 'Invalid query parameter values or types'], 400);
+    } catch (Exception $e) {
+        error_log("Unexpected error in GET /strings: " . $e->getMessage());
         jsonResponse(['error' => 'Internal error'], 500);
     }
 }
@@ -140,7 +139,6 @@ if ($method === 'GET' && preg_match('#^/strings/(.+)$#', $path, $m)) {
     if (!$row) jsonResponse(['error' => 'String does not exist in the system'], 404);
     jsonResponse($row, 200);
 }
-
 
 // DELETE /strings/{string_value}
 if ($method === 'DELETE' && preg_match('#^/strings/(.+)$#', $path, $m)) {
