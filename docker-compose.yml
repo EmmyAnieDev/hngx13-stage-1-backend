@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: string-analyzer-php-app
+    ports:
+      - "9000:9000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    networks:
+      - app-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: string-analyzer-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - .:/var/www/html
+      - ./nginx:/etc/nginx/conf.d:ro
+    depends_on:
+      - app
+    networks:
+      - app-network
+
+  postgres:
+    image: postgres:16
+    container_name: string-analyzer-db
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  pgdata:
